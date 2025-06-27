@@ -1,0 +1,15 @@
+2025-06-27 12:14:38.897+0000 INFO  Logging config in use: File '/var/lib/neo4j/conf/user-logs.xml'
+2025-06-27 12:14:38.907+0000 INFO  Starting...
+2025-06-27 12:14:39.462+0000 INFO  This instance is ServerId{7dca6452} (7dca6452-9fca-4cc2-8cb7-58362fd000a6)
+2025-06-27 12:14:40.138+0000 INFO  ======== Neo4j 2025.05.1 ========
+2025-06-27 12:14:47.549+0000 INFO  Anonymous Usage Data is being sent to Neo4j, see https://neo4j.com/docs/usage-data/
+2025-06-27 12:14:55.662+0000 INFO  Bolt enabled on 0.0.0.0:7687.
+2025-06-27 12:14:56.237+0000 INFO  HTTP enabled on 0.0.0.0:7474.
+2025-06-27 12:14:56.238+0000 INFO  Remote interface available at http://localhost:7474/
+2025-06-27 12:14:56.240+0000 INFO  id: 7444B3F7BB66ED19CAEDAFCBE761BEB30B651E5C957BB3966725572E6777170A
+2025-06-27 12:14:56.240+0000 INFO  name: system
+2025-06-27 12:14:56.241+0000 INFO  creationDate: 2025-06-27T12:14:40.834Z
+2025-06-27 12:14:56.242+0000 INFO  Started.
+2025-06-27 12:15:45.116+0000 WARN  [bolt-10] The client is unauthorized due to authentication failure.
+2025-06-27 12:15:52.802+0000 WARN  [bolt-11] The client is unauthorized due to authentication failure.
+2025-06-27 12:18:09.658+0000 WARN  [bolt-24] The client is unauthorized due to authentication failure.
