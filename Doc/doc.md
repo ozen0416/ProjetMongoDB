@@ -1,169 +1,322 @@
-# Projet Mongo DB
+# Projet BDD Graphe
 
-* Prérequis : l'intégralité du projet sera en python, et la dernière version de mongo est installée
+* Prérequis : installation de Neo4j Desktop et de Docker Desktop
 
-## Partie Standalone
+On va créer un fichier yml avec le service neo4j.
 
-Avant tout je vais créer l'arborescence de mon projet, qui est très classique et conseillée :
+Ensuite on va créer nos fichiers pythons pour que le projet fonctionne.
+Notamment les fichiers de connexions à la base de donnée, les requirements ou l'api.
 
-![arbo.png](../Images/arbo.png)
+Nous allons voir quelques fichiers important pour le projet.
 
-Ensuite je vais créer mon utilisateurs admin pour que je puisse me connecter à ma base
-
-```py from pymongo import MongoClient
-
-client = MongoClient("mongodb://localhost:27017/")
-
-admin = client['admin']
-admin.command("createUser", "admin", pwd="adminpassword", roles=[
-    {"role": "userAdminAnyDatabase", "db": "admin"},
-    {"role": "readWriteAnyDatabase", "db": "admin"}
-])
-
+Tout d'abord la configuration de la base de donnée :
+```python
+@dataclass
+class Neo4jConfig:
+    uri: str = "bolt://localhost:7687"
+    username: str = "neo4j"
+    password: str = "motdepasse123"
+    database: str = "neo4j"
 ```
-J'accorde tous les droits à cet admin.
+Un simple fichier qui nous permet de renseigner les informations pour la connexion à la base de donnée.
 
-Je crée ma base en lui donnant un nom **testdb**, et à l'intérieur une collection nommée **test**.
-Ici je vais ajouter des gens avec comme informations leur nom, leur âge et leur ville.
+Ensuite on va créer les commandes, clients et produits :
+```python
+@dataclass
+class Client:
+    nom: str
+    email: str
+    date_inscription: datetime
 
-```py from pymongo import MongoClient
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "nom": self.nom,
+            "email": self.email,
+            "date_inscription": self.date_inscription.isoformat()
+        }
 
-client = MongoClient("mongodb://admin:adminpassword@localhost:27017/?authSource=admin")
 
-db = client['testdb']
-collection = db['test']
+@dataclass
+class Produit:
+    nom: str
+    prix: float
+    categorie: str
+    description: str
 
-documents = [
-    {"name" : "François", "age" : 40, "city" : "Marseille"},
-    {"name" : "Marie", "age" : 23, "city" : "Toulouse"},
-    {"name" : "Stéphane", "age" : 35, "city" : "Paris"},
-    {"name" : "Titouan", "age" : 8, "city" : "Lyon"}
-]
-collection.insert_many(documents)
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "nom": self.nom,
+            "prix": self.prix,
+            "categorie": self.categorie,
+            "description": self.description
+        }
+
+
+@dataclass
+class Commande:
+    id_commande: str
+    date_commande: datetime
+    montant_total: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id_commande": self.id_commande,
+            "date_commande": self.date_commande.isoformat(),
+            "montant_total": self.montant_total
+        }
+```
+Enfin les requêtes. Voici quelques exemples :
+```python
+    def get_produits_par_client(self, email_client: str) -> List[Dict[str, Any]]:
+        query = """
+        MATCH (c:Client {email: $email})-[:A_EFFECTUÉ]->(cmd:Commande)-[cont:CONTIENT]->(p:Produit)
+        RETURN p.nom as produit, p.prix as prix, p.categorie as categorie,
+               cont.quantite as quantite, cont.prix_unitaire as prix_unitaire,
+               cmd.id_commande as commande, cmd.date_commande as date_commande
+        ORDER BY cmd.date_commande DESC
+        """
+
+        with self.driver.session() as session:
+            result = session.run(query, email=email_client)
+            return [record.data() for record in result]
 ```
 
-Et enfin une requête simple qui trie les résultats par odre décroissant :
+```python
+    def get_clients_par_produit(self, nom_produit: str) -> List[Dict[str, Any]]:
+        query = """
+        MATCH (c:Client)-[:A_EFFECTUÉ]->(cmd:Commande)-[:CONTIENT]->(p:Produit {nom: $produit})
+        RETURN c.nom as client, c.email as email, 
+               cmd.id_commande as commande, cmd.date_commande as date_commande
+        ORDER BY cmd.date_commande DESC
+        """
 
-```py 
-results = collection.find().sort("age", -1)
-for doc in results:
-    print(doc)
+        with self.driver.session() as session:
+            result = session.run(query, produit=nom_produit)
+            return [record.data() for record in result]
 ```
+Ensuite on créé l'api avec FastAPI.
 
-On se connecte avec MongoDB Compass en local sur le port 27017 et on y retrouve notre collection et nos documents :
+```python
+from contextlib import asynccontextmanager
 
-![mongodbcompass.png](../Images/mongodbcompass.png)
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, EmailStr
+from typing import List, Dict, Any, Optional
+import logging
+from database import Neo4jConnection
+from queries import Neo4jQueries
+from config import Neo4jConfig
 
-## Partie réplica set
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-Tout d'abord on va avoir besoin de créer nos dossiers pour nos réplicats.
-Dans mon cas ils se situeront ici : "C:\mongo_replicat\rsX"
 
-Dans un terminal en administrateur on va créer les dossiers pour les réplicats avec la commande
-```shell
-mkdir "C:\Program Files\MongoDB\Server\8.0\bin\mongod.exe" --replSet rs0 --dbpath C:\mongo_replicaset\rsX --port 2702X --bind_ip localhost --logpath C:\mongo_replicaset\rsX\mongo.log --logappend
+class ClientResponse(BaseModel):
+    nom: str
+    email: EmailStr
 
-```
-Et ceci pour les 3
 
-Ensuite on va créer la base primaire ici sur un port différent que celui du standalone
-```py
-client = MongoClient('localhost', 27021)
-db = client['replitest']
-collection = db['test']
+class ProduitResponse(BaseModel):
+    produit: str
+    prix: float
+    categorie: str
+    quantite: int
+    prix_unitaire: float
+    commande: str
+    date_commande: str
 
-doc = {"name" : "replica_test", "value" : 123}
-collection.insert_one(doc)
-print("Document inséré sur le primary")
-```
-Ensuite les replicats
-```py
-client = MongoClient("mongodb://localhost:27021")
 
-config = {
-    "_id": "rs0",
-    "members": [
-        {"_id": 0, "host": "localhost:27021"},
-        {"_id": 1, "host": "localhost:27022"},
-        {"_id": 2, "host": "localhost:27023"},
-    ]
-}
+class SuggestionResponse(BaseModel):
+    produit: str
+    categorie: str
+    prix: float
+    description: str
+    popularite: int
+    prix_moyen: float
 
-try:
-    client.admin.command("replSetInitiate", config)
-    print("replica initialisé")
-except errors.OperationFailure as e:
-    if "already initialized" in str(e):
-        print("réplica déjà initialisé")
-    else:
+
+app = FastAPI(
+    title="API Neo4j E-commerce",
+    description="API REST pour interagir avec une base de données Neo4j d'e-commerce",
+    version="1.0.0"
+)
+
+neo4j_connection = None
+queries = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global neo4j_connection, queries
+    try:
+        config = Neo4jConfig()
+        neo4j_connection = Neo4jConnection(config)
+        driver = neo4j_connection.connect()
+        queries = Neo4jQueries(driver)
+        logging.info("API démarrée avec succès")
+        yield
+    finally:
+        if neo4j_connection:
+            neo4j_connection.close()
+            logging.info("Connexion fermée proprement")
+
+app = FastAPI(
+    title="API Neo4j E-commerce",
+    description="API REST pour interagir avec une base de données Neo4j d'e-commerce",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+
+def get_queries() -> Neo4jQueries:
+    if queries is None:
+        raise HTTPException(status_code=500, detail="Service de base de données non disponible")
+    return queries
+
+
+@app.get("/", summary="Page d'accueil")
+async def root():
+    return {"message": "API Neo4j E-commerce", "version": "1.0.0", "status": "active"}
+
+
+@app.get("/stats", summary="Statistiques générales")
+async def get_statistiques(queries: Neo4jQueries = Depends(get_queries)):
+    try:
+        stats = queries.get_statistiques_generales()
+        return JSONResponse(content=stats)
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des statistiques: {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
+
+
+@app.get("/clients/{email}/produits",
+         response_model=List[ProduitResponse],
+         summary="Produits achetés par un client")
+async def get_produits_client(
+        email: EmailStr,
+        queries: Neo4jQueries = Depends(get_queries)
+):
+    try:
+        produits = queries.get_produits_par_client(str(email))
+        if not produits:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Aucun produit trouvé pour le client {email}"
+            )
+        return produits
+    except HTTPException:
         raise
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des produits pour {email}: {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
 
-for i in range(30):
-    status = client.admin.command("replSetGetStatus")
-    for member in status["members"]:
-        if member["name"].startswith("localhost:27021") and member["stateStr"] == "PRIMARY":
-            break
-    else:
-        time.sleep(1)
-        continue
-    break
-else:
-    raise TimeoutError()
 
-replica_client = MongoClient("mongodb://localhost:27021,localhost:27022,localhost:27023/?replicaSet=rs0")
+@app.get("/clients/{email}/suggestions",
+         response_model=List[SuggestionResponse],
+         summary="Suggestions de produits pour un client")
+async def get_suggestions_client(
+        email: EmailStr,
+        limite: Optional[int] = 5,
+        queries: Neo4jQueries = Depends(get_queries)
+):
+    try:
+        if limite <= 0 or limite > 20:
+            raise HTTPException(
+                status_code=400,
+                detail="La limite doit être entre 1 et 20"
+            )
 
-db = replica_client.testdb
-result = db.test.insert_one({"msg": "PRIMARY"})
-print("document inséré avec l'_id :", result.inserted_id)
+        suggestions = queries.get_suggestions_produits(str(email), limite)
+        if not suggestions:
+            return []
+
+        return suggestions
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erreur lors de la génération de suggestions pour {email}: {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
+
+
+@app.get("/produits/{nom_produit}/clients",
+         response_model=List[ClientResponse],
+         summary="Clients ayant acheté un produit")
+async def get_clients_produit(
+        nom_produit: str,
+        queries: Neo4jQueries = Depends(get_queries)
+):
+    try:
+        clients = queries.get_clients_par_produit(nom_produit)
+        if not clients:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Aucun client trouvé pour le produit '{nom_produit}'"
+            )
+        return clients
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des clients pour {nom_produit}: {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
+
+
+@app.get("/produits/{nom_produit}/commandes",
+         summary="Commandes contenant un produit")
+async def get_commandes_produit(
+        nom_produit: str,
+        queries: Neo4jQueries = Depends(get_queries)
+):
+    try:
+        commandes = queries.get_commandes_avec_produit(nom_produit)
+        if not commandes:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Aucune commande trouvée pour le produit '{nom_produit}'"
+            )
+        return JSONResponse(content=commandes)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des commandes pour {nom_produit}: {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+
 ```
 
-Et enfin la secondaire
-```py
-secondary_client = MongoClient('localhost', 27018, readPreference="secondaryPreferred")
-secondary_collection = secondary_client['replitest']['test']
-
-doc = secondary_collection.find_one({"name": "replica_test"})
-print("document lu depuis secondary", doc)
+Visualisation du graphe :
+```txt
++----------------+         A_EFFECTUÉ        +----------------+        CONTIENT        +----------------+
+|    Client      |-------------------------> |   Commande     |---------------------->|    Produit     |
++----------------+                          +----------------+                       +----------------+
+| nom            |                          | id_commande    |                       | nom            |
+| email          |                          | date_commande  |                       | prix           |
+| date_inscription|                         | montant_total  |                       | catégorie      |
++----------------+                          +----------------+                       | description    |
+                                                                                     +----------------+
 ```
-Et c'est au moment de lancer les commandes shells et les fichiers pythons que ça ne marche pas. J'ai beau changer de port la primaire et les secondaires rien ne marche et j'en ai aucune idée.
-
-## Intégration dans une application
-
-Même problème qu'au dessus le serveur sur un port différent ne fonctionne pas. Uniquement le port 27017 fonctionne.
-
-On crée un nouvel admin pour se connecter à notre base 
- ```py 
- from pymongo import MongoClient
-
-client = MongoClient("mongodb://localhost:27018")
-
-db = client.admin
-
-db.command("createUser", "admin", pwd="password123", roles=[{"role": "userAdminAnyDatabase", "db": "admin"}])
+Pour lancer le projet, d'abord installer le *requirement.txt*.
+```bash
+pip install -r requirements.txt
 ```
-
-On crée les requêtes pour notre base 
-```py 
-from pymongo import MongoClient
-
-
-client = MongoClient("mongodb://admin:password123@localhost:27017/admin")
-
-db = client["ma_base"]
-collection = db["utilisateurs"]
-
-collection.insert_one({"nom": "Alice", "age": 25})
-
-for doc in collection.find({"age": {"$gt": 20}}):
-    print(doc)
-
-collection.update_one({"nom": "Alice"}, {"$set": {"age": 26}})
-
-collection.delete_one({"nom": "Alice"})
+Ensuite lancer le .yml dans le dossier prévu.
+```bash
+docker compose up -d
 ```
-Et là avec la commande dans un terminal en administrateur
- ```shell
- "C:\Program Files\MongoDB\Server\8.0\bin\mongod.exe" --replSet rs0 --port 2702X --dbpath C:\mongo_replicaset\rsX --bind_ip localhost --logpath C:\mongo_replicaset\rsX\mongo.log --logappend
- ```
-
-On aurait pu se connecter à notre instance sur un port choisi, démarrer un nouveau réplicat avec **rs.ininiate()**, vérifier son status avec **rs.status()** et l'ajouter avec **rs.add()**.
+Ensuite initialiser les données avec :
+```bash
+pyton main.py
+```
+Et enfin l'api :
+```bash
+uvicorn api:app --reload
+```
+On va retrouver toutes nos informations sur l'adresse suivant
+```txt
+http://localhost:8000/docs
+```
